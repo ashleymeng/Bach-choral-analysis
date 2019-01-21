@@ -1,0 +1,311 @@
+---
+title: "How Musical Components Distinguish Bach's Chorales"
+author: "Ashley Meng (teamname: wicked little witch)"
+date: "12/15/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T)
+```
+
+```{r,warning=FALSE,message=FALSE,echo=FALSE}
+library(factoextra)
+library(ggplot2)
+library(cluster)
+library(stats)
+library(plyr)
+library(randomForest)
+```
+#Introduction
+Johann Sebastian Bach, one of the most prominent and intelligent pioneers in music, has progressed and made influential impact on liberal art history. Born in Baroque period, he absorbed the alien styles from Italy and other European countries to invent his own character and his compositions served for both non-religious society and the sacred church. Bach played the roles as being a composer and an organist, and his accomplishments covered the categories from cantatas, motets, chorales to passions and concertos. Within the first four decades of 18 centuries, Bach concentrated on finishing chorales, 400 among which are extant and well-stored through generations. Bach-Werke-Verzeichnis (BWV) is the catalogue that keeps track of Bach's compositions, and it is also the index reference of this project.
+
+As a fan of classical music and violin player, I was motivated to dig out the hidden information underneath the dataset where classical music is involved. Therefore, when I first came across this "Bach Choral Harmony Data Set", homing in UC Irvine Machine Learning Repository, I decided to choose this as my target, in the attempt to analyze Bach's habit in writing chorales or what are similarities that could be shard by certain pieces. I was hoping the analysis could bring me closer to Bach and his inner world.
+
+So far, based on the same dataset, what has achieved is the study of [Supervised Sequential Learning](https://pdfs.semanticscholar.org/a162/4ab4117ba713946c841b234e45a9e0a577e6.pdf) by a group of researchers from University of Turin, as well as a [chord recognition system](https://link.springer.com/chapter/10.1007/978-3-642-11674-2_7) for complicated harmony analysis from the same university.
+
+The dataset contains 60 of Bach's chorales, originially retrieved from [Bach Central](http://www.bachcentral.com) that links to BWV. Each music breaks down into at most 166 events where 14 features are employed for description. Each event has the following features: the original chorale name (serial number), its event number(integer), the pitch classes it has, the bass, the meter, and the chord label. Some opaque features should be addressed: every event is made up of three notes where each note corresponds to a pitch class and there are twelve classes in total. Bass, specifically points to the lowest one among three notes. Meter measures the strong/weak level of the event with integers where 1 is the weakest and 5 is the strongest. The labeled chord has three notes where accented harmonic sound can be produced if played all at once. 
+
+```{r,echo=FALSE}
+bach = read.table('/Users/mengfanwei/Desktop/UIUC/Fall 2018/STAT 432/jsbach_chorals_harmony/jsbach_chorals_harmony.data',sep=",",fill = TRUE)
+colnames(bach) = c('Choral ID','Event#','C','C+','D','D+','E','F','F+','G','G+','A','A+','B','Bass','Meter','Chord')
+```
+
+#Summary of Data and Data Visualization
+Once the dataset is depicted verbally, the next thing is to input and take a closer look at the raw data. There is nothing better than displaying the first few rows.
+```{r}
+head(bach)
+```
+
+Descriptive features suggest their type of qualitative. Summary() performs well with numerical values but not with categorical case, thus str() stands out to be alternative.
+```{r}
+str(bach)
+```
+
+Summary shows the size of dataset is 5665 observations by 17 variables, among which only Event number and Meter are integers while the rest are factors with pre-defined labels. To facilitate future analysis, it is better to factor "Meter" for consistency. 
+
+One issue needs being detected for every dataset is missing values since one missing piece will lead to one information loss that hinders the study, therefore search and removal of the blanks are the priorities. Rename the new dataset after cleaning and correction, and this cleaned dataset will assist in deriving various tabular forms that feed machine learning models.   
+```{r}
+bach_refined = bach[complete.cases(bach),]
+```
+
+The size of the refined dataset is 4781 by 17, which means 884 NAs are removed.
+
+```{r,echo=FALSE}
+bach_refined[bach_refined[,1] == '    002908ch',1] = '002908ch'
+bach_refined[bach_refined[,1] == '  003006b_',1] = '003006b_'
+bach_refined = droplevels(bach_refined)
+choral_name = levels(bach_refined[,1])
+choral_name_list = as.vector(rep(0,length = length(choral_name)))
+for (i in c(1:length(choral_name))){
+  choral_name_list[i] = nrow(bach_refined[bach_refined[,'Choral ID'] == choral_name[i],])
+}
+choral_event_count = as.data.frame(cbind(choral_name,choral_name_list))
+choral_event_count[,2] = as.numeric(levels(choral_event_count[,2]))[choral_event_count[,2]]
+```
+
+One initial goal of the analysis is seeking similarities shared by certain groups of chorales. Although clustering will be the major process, it is essentail to identify each choral with their events from the data. Fortunately, the arrangement of choral ID and event numbers are in the right order, so with a forloop code, count of events within each choral can be presented.
+```{r}
+head(choral_event_count)
+```
+
+# Analysis and Results
+The chord resonated during given event is partially defined by the appearance of pitch classes, bass and meter, so these are correlated covariates. In deciding picking characters to represent events, either single chord label or certain combination of other features is feasible and single chord label would be easy to start with. The core of cluster analysis is grouping similar items in terms of distances, so numerical values are involved most of the time. The current dataset, however, is categorical-oriented and one way to convert is frequency table. The data management techniques allows transformation on dataset from which frequency table of chord label with respect to chorales is generated.
+```{r,echo=FALSE}
+#Frequency Table of Chord Label
+bach_train = bach_refined[,-c(1:2)]
+
+s1 = bach_train[c(1:choral_event_count[1,2])+1-1,]
+t1 = as.data.frame(table(s1[,15]))
+
+for (i in c(2:60)){
+  sum_chord = sum(choral_event_count[c(1:i-1),2])
+  s2 = bach_train[c((sum_chord+1):(sum_chord+choral_event_count[i,2])),]
+  t1[i+1] = as.data.frame(table(s2[,15]))[2]
+}
+
+chord_freq_table = t(t1[-1])
+colnames(chord_freq_table) = t(t1[1])
+```
+
+There are multiple methods of clustering, such as hierachical clustering, K means clustering...The methods deployed here are PAM (partitioning around medoids) and K means clustering, with the help of silhouette for tuning parameters. Number of clusters in use is the parameter whose optimal solution needs to be found and silouette width is the measuremene of that. Basically, silouette width ranges from -1 to 1 where the sign indicates correct classification and magnitude value indicates how likely the item belongs to the group. The chosen methods are appropriate under the consideration of plotting since clusplot requires both PAM and K means arguments. Besides, PAM is more robust than K means which is capable of improving accuracy.
+
+```{r,echo=FALSE,fig.height=5,fig.width=5}
+#Clustering:
+#1.PAM and silhouette method
+#Find optimal number of clusters:
+fviz_nbclust(chord_freq_table,kmeans,method='silhouette')
+chord_dist = as.matrix(dist(chord_freq_table))
+chord_sil = silhouette(pam(chord_dist,8))
+plot(chord_sil)
+```
+
+The first plot suggests eight is the best selection and the second plot is the detailed version of silhouette width. The bars growing to the right are in suitble place, so there is one obvious misclassified choral which is the eighteenth piece.
+```{r,echo=FALSE}
+silhouette(pam(chord_dist,8))[,1]
+```
+
+The above PAM output suggests the classification of eight groups and due to notation, the column names are one less than their original choral name.
+```{r,echo=FALSE,results='hide',fig.show='hide'}
+#2. Hierarchical Cluster
+chord_hclust = hclust(dist(chord_freq_table),method = 'complete')
+cutree(chord_hclust,k=8)
+plot(chord_hclust)
+```
+
+```{r,echo=FALSE}
+#3. K means cluster
+kmeans(chord_freq_table,centers = 8)$cluster
+chord_table = table(silhouette(pam(chord_dist,8))[,1],kmeans(chord_freq_table,centers = 8)$cluster)
+misclass_rate = 1-sum(diag(chord_table))/sum(chord_table)
+```
+
+K means cluster yields a seemingly different result, from which conclusion should have inferred that two methods are not compatible. On the contrary, as clusplot() takes two results as arguments, the graph displays a reasonable and interpretable classification. 
+```{r,echo=FALSE,fig.show='hide'}
+clusplot(pam(chord_dist,8),kmeans(chord_freq_table,centers = 8)$cluster,lines=0,color=T,labels=2)
+
+```
+![cluster of chord cluster](chord.png)
+
+Although the raw data are mainly categorical, it is restrained to principal component analysis, the frequency table, however, is free of limit, and the clusplot, which is on the basis of principal component analysis, does a good job in visualizing the group of chorales. Disgarding the minorities, the principal component analysis captures the major variations of the scattered data that are calculated from K means and PAM. Four groups are undoubtedly distinguished from the dense chunk which means there indeed exist some similarities within these groups that make them far away from the rest. The similarities are dependent on chord labels which may be hard to tell from human's hearing, but can be detected by professional devices.
+For example, the group 1 (each group has its number around the border) contains choral 1, 39, 45 whose original files are:
+
+* 1. BWV 1.06:[Wie bin ich doch so herzlich froh](https://www.youtube.com/watch?v=M_fmzparUf8)
+
+* 39. BWV 126.06:[Verleih uns Frieden gnädiglich Gib unsern Fürsten und all'r Obrigkeit]: audio source not found
+
+* 45. BWV 140.07:[Gloria sei dir gesungen](https://www.youtube.com/watch?v=pc9xMRVUV6c)
+
+The group 5 contains choral 11, 12, 15, 17, 27, 29, 31, 51 and here are the audio samples:
+
+* 11. BWV 12.07:[Was Gott tut, das ist wohlgetan](https://www.youtube.com/watch?v=UhRvPUJdphY)
+
+* 27. BWV 39.07:[Selig sind, die aus Erbarmen](https://www.youtube.com/watch?v=03OoJ1i5ESM)
+
+* 31. BWV 57.08:[Richte dich, Liebste, nach meinem Gefallen und gläube](https://www.youtube.com/watch?v=qAmG8RmNwes) 
+
+One more group samples (from group 8):
+
+* 22. BWV 31.09:[So fahr ich hin zu Jesu Christ](https://www.youtube.com/watch?v=up6CGmqYxF8)
+
+* 24. BWV 33.06:[Ehr sei Gott in dem höchsten Thron](https://www.youtube.com/watch?v=IogYvCC6vQM)
+
+If listens carefully, group 1 and group 5 are somehow not conveying the same feeling. One is in slow, peaceful motion whereas the other is faster brighter and ascending/descneding steeper. The audible variation indicates the some chorales are separable in terms of chord labels and the above-mentioned methods are effective and successful in accomplishing the task. As for the non-separable chorales, more complicated techniques should be involved so deeper research will be initiated toward this direction.
+
+When the analysis of single chord label comes to an end, the concern of other feature combination comes to the surface. Since handling twelve pitch classes requires a huge amount of work and is beyond the page limit of this project, it will be put aside at this moment. Bass as well as meter, therefore, are the main considerations.
+
+```{r,echo=FALSE}
+bach_copy2 = bach_train
+t3 = as.data.frame(table(s1[,13]))
+
+for (i in c(2:60)){
+  sum_bass = sum(choral_event_count[c(1:i-1),2])
+  s3 = bach_copy2[c((sum_bass+1):(sum_bass+choral_event_count[i,2])),]
+  t3[i+1] = as.data.frame(table(s3$Bass))[2]
+}
+bass_freq_table = t(t3[,-1])
+colnames(bass_freq_table) = t(t3[1])
+
+```
+```{r,echo=FALSE,fig.show='hide'}
+fviz_nbclust(bass_freq_table,kmeans,method='silhouette')
+```
+
+```{r,echo=FALSE,fig.show='hide'}
+#Frequency Table of Meter
+#convert integer "Meter" into factor
+bach_copy = bach_train
+bach_copy$Meter = factor(bach_copy$Meter)
+t2 = as.data.frame(table(s1[,14]))
+
+for (i in c(2:60)){
+  sum_meter = sum(choral_event_count[c(1:i-1),2])
+  s2 = bach_copy[c((sum_meter+1):(sum_meter+choral_event_count[i,2])),]
+  t2[i+1] = as.data.frame(table(s2$Meter))[2]
+}
+
+meter_freq_table = t(t2[-1])
+colnames(meter_freq_table) = t(t2[1])
+```
+
+
+```{r,echo=FALSE,fig.show='hide'}
+#1. PAM
+fviz_nbclust(meter_freq_table,kmeans,method='silhouette')
+```
+
+```{r,echo=F,fig.show='hide',results='hide'}
+meter_dist = as.matrix(dist(meter_freq_table))
+meter_sil = silhouette(pam(meter_dist,2))
+plot(meter_sil)
+
+silhouette(pam(meter_dist,2))[,1] 
+table(silhouette(pam(meter_dist,2))[,1])
+```
+
+```{r,echo=FALSE,results='hide',fig.show='hide'}
+meter_hclust = hclust(dist(meter_freq_table),method = 'complete')
+cutree(meter_hclust,k=2)
+
+plot(meter_hclust)
+```
+```{r,echo=FALSE,results='hide',fig.show='hide'}
+kmeans(meter_freq_table,centers = 2)$cluster
+
+```
+```{r,echo=FALSE,fig.show='hide'}
+clusplot(pam(meter_dist,2),kmeans(meter_freq_table,centers = 2)$cluster,lines=0,color=T,labels=2)
+```
+
+```{r,echo=FALSE}
+#Combine 'Meter' and 'Bass' into one variable and create frequency table
+meter_bass_df = cbind.data.frame(bach_copy[,13],bach_copy[,14])
+colnames(meter_bass_df) = c('Bass','Meter')
+
+d = expand.grid(sort(unique(bach_copy[,13])),sort(unique(bach_copy[,14])))
+d = t(as.data.frame(mdply(d,'paste',sep='')[,3]))
+
+s4 = meter_bass_df[c(1:choral_event_count[1,2]),]
+counts = as.data.frame(matrix(table(s4$Bass,s4$Meter),nrow=1))
+colnames(counts) = d
+
+
+for (i in c(2:60)){
+  sum_ct = sum(choral_event_count[c(1:i-1),2])
+  s4 = meter_bass_df[c((sum_ct+1):(sum_ct+choral_event_count[i,2])),]
+  counts[i,] = table(s4$Bass,s4$Meter)
+}
+
+head(counts)
+```
+
+The new meter & bass combined table now contains 55 variables which is the Cartesian product of 11 bass levels and 5 meter levels. Rather than depending on fviz_nbclust to tune parameter, it is stick to the eight groups that chord label uses. Repeat the same steps and here release the relevant outputs:
+```{r,echo=FALSE,results='hide',fig.show='hide'}
+#1. hclust for meter$bass variable
+mc_hclust = hclust(dist(counts),method = 'complete')
+cutree(mc_hclust,k=3)
+
+plot(mc_hclust) #visually helps decision on number of clusters
+
+```
+
+```{r,echo=FALSE,fig.height=5}
+#2. PAM
+mc_dist = as.matrix(dist(counts))
+mc_sil = silhouette(pam(mc_dist,8))
+plot(mc_sil)
+
+```
+
+```{r,echo=FALSE,fig.show='hide'}
+clusplot(pam(mc_dist,8),kmeans(counts,centers = 8)$cluster,lines=0,color=T,labels=2)
+```
+
+```{r,echo=FALSE}
+mc_table = table(silhouette(pam(mc_dist,8))[,1],silhouette(pam(chord_dist,8))[,1])
+misclass_rate = 100*(1-sum(diag(mc_table))/sum(mc_table))
+mc_table
+```
+
+The chorals are elegantly seperated by meter&bass with three possible missclassified individuals, indicating the well performance of this two-in-one variable, In addition, if comparing chord and meter&bass results, the grouping are pretty consistent, with the misclassification rate of 13.33%. 
+
+![cluster of meter&bass](meter&bass.png)
+
+The more convincing evidence comes from the elements in each group - the above-mentioned sample audios still belong to their old groups.
+
+The motivation of the above analysis is that chord label requires heavy manual calculation. Due to this fact, it is acceptable to have meter and bass as substitution in distinguishing chorales under the circumstance of which chord labels are unknown.
+
+Last but not least, carrying out an supervised random forest on chord labels with the respect of other elements since chord label is said to be predictable from other predictors. If proven true, then prediction can be one approach to avoid heavy calculation from human beings. Meanwhile, using single character to distinguish chorales can also be achieved. 
+
+```{r,echo=FALSE}
+bach_factor = bach_refined[,-c(1:2)]
+colnames(bach_factor) =c('C','C1','D','D1','E','F','F1','G','G1','A','A1','B','Bass','Meter','Chord')
+bach_factor[,14] = as.factor(bach_factor[,14])
+```
+
+```{r,fig.height=5}
+set.seed(1234)
+rf = randomForest(Chord~., data=bach_factor, ntree=400)
+```
+
+Random forest has the attribute to handle classification of categorical variables. Unless there are more than 32 factors involved, there is no need to translate them into dummy variables. The ntree is set to 400 after tuning the parameter within the range of 300 to 500 and other parameters are adhere to default setting.
+
+```{r}
+importance(rf)
+varImpPlot(rf)
+```
+
+ What to see is the variable of importance that is proportion each predictor contributes to chord label and it turns out bass contributes the most. It reveals why bundle of meter and bass is a strong backup of chord label. One suspision, however, is only bass and chord label have more than 5 labels, so higher chord label is largely determined by higher bass note. 
+
+```{r}
+count(bach_factor[,15]==rf$predicted)
+```
+
+As for the predicting power of random forest, among 4781 events, 3602 are predicted with no error, obtaining a misclassification rate of 25%. On average, one in every four pieces is wrongly assigned. This may lead to the result of not picking up the distincted chorales. 
+
+#Discussion
+To conclude from the above, I proposed methods to differentiate chorales. One way is through single chord label variable but the disadvantage comes from the tedious human calculation at the beginning. Another advanced way is through combining bass and meter as one variable since bass is an informative predictor of chord label which I proved in the ensuing part. Either method finds their own types of chorales and most of them overlap which is a good sign. 
+
+This shallow analysis is barely scratching the surface of the topic, leaving a bunch of untouched area due to limited pages and knowledge. For example, I was unable to include pitch classes inside the meter and bass bundle, expected from which the accuracy might be improved; If the goal is to take a detailed look at chord label itself, then I can further identify the decisive ones that trigger the classification.
+
+The analysis also leaves a trial of question marks. If pre-defined labels of each categorical variable differ, would bass still tell the most of chord label? How does the predicted chord label from random forest effect on chorales classification? Will the results be as good as the current one? Problem should be strictly addressed from scientific point of view and the remedy of improvement should be further discovered. 
