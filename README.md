@@ -1,2 +1,2 @@
 # Bach-choral-analysis
-Code sample of cluster analysis of Bach's 65 chorales
+R code sample of cluster analysis of Bach's 65 chorales
